@@ -1,0 +1,27 @@
+# Ignore Python compiled files
+*.pyc
+__pycache__/
+
+# ignore output files
+*.csv
+
+# Ignore the virtual environment
+venv/
+
+# Ignore the Pipenv and Pipfile.lock files
+Pipfile.lock
+Pipfile
+
+# Ignore the .env file
+.env
+
+# Ignore the .vscode folder (if using VS Code)
+.vscode/
+
+# Ignore any local settings or configuration files
+config.json
+settings.py
+
+# Ignore any local development or testing data
+data/
+test_data/
