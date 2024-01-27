@@ -68,7 +68,18 @@ def request_exponential_backoff(url: str, params: Dict = None):
         return None
 
 
-def get_assigned_users(jira_project, time_since):
+def add_dict_to_dataframe(data_dict: Dict[str, int], df: pd.DataFrame) -> pd.DataFrame:
+    # Convert the dictionary to a DataFrame
+    new_data = pd.DataFrame(list(data_dict.items()),
+                            columns=['name', 'num_issues'])
+
+    # Concatenate the new data with the existing DataFrame
+    new_data = pd.concat([df, new_data], ignore_index=True)
+
+    return new_data
+
+
+def get_assigned_users(jira_project, time_since) -> Dict:
     jira_org_name = os.getenv("JIRA_ORG_NAME")
     jira_user = os.getenv("JIRA_USER")
     jira_api_token = os.getenv("JIRA_API_TOKEN")
@@ -92,7 +103,7 @@ def get_assigned_users(jira_project, time_since):
 
     # API endpoint for searching issues
     search_url = f"{jira_base_url}/search"
-
+    issue_counter: int = 0
     while total_issues is None or start_at < total_issues:
         # Make the GET request with pagination
         params: Dict = {'jql': jql, 'startAt': start_at,
@@ -124,21 +135,10 @@ def get_assigned_users(jira_project, time_since):
                 f'Failed to fetch data: {response.status_code} - {response.text}')
             break
 
-    # # Make the request to Jira API
-    # response = requests.get(search_url, auth=HTTPBasicAuth(
-    #     jira_user, jira_api_token), headers=headers, params={"jql": jql})
-    # # Raises an HTTPError if the HTTP request returned an unsuccessful status code
-    # response.raise_for_status()
+        issue_counter += 1
+        print(f"{issue_counter}", end='\r', flush=True)
 
-    # assigned_users: [] = None
-    # # Parse response
-    # issues_response = response.json()
-    # if "issues" in issues_response:
-    #     issues_list = issues_response["issues"]
-    #     if isinstance(issues_list, list):
-    #         assigned_users = {issue["fields"]["assignee"]["displayName"]
-    #                           for issue in issues_list if "assignee" in issue["fields"]}
-        print(f'Scanned through {total_issues} issues since {since_date_str}')
+    print(f'Scanned through {total_issues} issues since {since_date_str}')
 
     return user_issue_count
 
@@ -153,8 +153,12 @@ if __name__ == "__main__":
     since_date: datetime = get_date_months_ago(default_lookback)
     since_date_str: str = since_date.strftime('%Y-%m-%d')
 
-    list_assigned_users: Dict = get_assigned_users(JIRA_PROJECT, since_date)
-    print(f'Assigned users: {list_assigned_users}')
+    dict_assigned_users: Dict = get_assigned_users(JIRA_PROJECT, since_date)
+    df = pd.DataFrame
+    df = add_dict_to_dataframe(dict_assigned_users, df)
+    print(f'Assigned users: {df}')
+    csv_file_path = f'{since_date_str}_{JIRA_PROJECT}_Jira_Stats.csv'
+    df.to_csv(csv_file_path, index=False)
 
 
 # # Endpoint to get issues for a sprint
