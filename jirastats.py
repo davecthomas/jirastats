@@ -68,10 +68,13 @@ def request_exponential_backoff(url: str, params: Dict = None):
         return None
 
 
-def add_dict_to_dataframe(data_dict: Dict[str, int], df: pd.DataFrame) -> pd.DataFrame:
-    # Convert the dictionary to a DataFrame
-    new_data = pd.DataFrame(list(data_dict.items()),
-                            columns=['name', 'num_issues'])
+def add_dict_to_dataframe(data_dict: Dict[str, int], df: pd.DataFrame, col_name_key: str, col_name_value: str) -> pd.DataFrame:
+    if not isinstance(df, pd.DataFrame):
+        raise ValueError("df must be a pandas DataFrame")
+
+    # Convert the dictionary to a DataFrame with specified column names
+    new_data = pd.DataFrame(list(data_dict.items()), columns=[
+                            col_name_key, col_name_value])
 
     # Concatenate the new data with the existing DataFrame
     new_data = pd.concat([df, new_data], ignore_index=True)
@@ -120,6 +123,9 @@ def get_assigned_users(jira_project, time_since) -> Dict:
 
             # Update user-issue counts
             for issue in issues:
+                issue_counter += 1
+                print(f"{issue_counter} of {total_issues}",
+                      end='\r', flush=True)
                 assignee = issue['fields']['assignee']
                 if assignee:
                     # or 'emailAddress' depending on your JIRA setup
@@ -135,12 +141,62 @@ def get_assigned_users(jira_project, time_since) -> Dict:
                 f'Failed to fetch data: {response.status_code} - {response.text}')
             break
 
-        issue_counter += 1
-        print(f"{issue_counter}", end='\r', flush=True)
-
-    print(f'Scanned through {total_issues} issues since {since_date_str}')
+    print(
+        f'Scanned through {issue_counter} of {total_issues} issues since {since_date_str}')
 
     return user_issue_count
+
+
+def get_completed_issues_by_user(jira_project, time_since) -> Dict[str, int]:
+    start_at: int = 0
+    max_results: int = JIRA_MAX_PAGE_SIZE
+    total_issues: int = None
+    user_completed_issue_count: Dict[str, int] = {}
+
+    # Format the time_since to the appropriate format for JIRA API
+    time_since_str = time_since.strftime("%Y-%m-%d %H:%M")
+
+    # JQL (Jira Query Language) for searching issues
+    jql = f"project = {jira_project} AND status = 'Completed' AND updated >= '{time_since_str}'"
+
+    # API endpoint for searching issues
+    search_url = f"{JIRA_BASE_URL}/search"
+
+    while total_issues is None or start_at < total_issues:
+        params: Dict = {'jql': jql, 'startAt': start_at,
+                        'maxResults': max_results}
+        response = request_exponential_backoff(search_url, params)
+
+        if response and response.status_code == 200:
+            data = response.json()
+            issues = data.get('issues', [])
+
+            for issue in issues:
+                assignee = issue['fields']['assignee']
+                if assignee:
+                    assignee_username: str = assignee['displayName']
+                    user_completed_issue_count[assignee_username] = user_completed_issue_count.get(
+                        assignee_username, 0) + 1
+
+            total_issues = data.get('total', 0)
+            start_at += len(issues)
+        else:
+            print(
+                f'Failed to fetch data: {response.status_code} - {response.text}')
+            break
+
+    return user_completed_issue_count
+
+
+def integrate_data(df1, df2):
+
+    # Merge the two DataFrames on the 'name' column
+    merged_df = pd.merge(df1, df2, on='name', how='outer')
+
+    # Replace NaN values with 0 (in case there are users with assigned issues but no completed issues, and vice versa)
+    merged_df.fillna(0, inplace=True)
+
+    return merged_df
 
 
 if __name__ == "__main__":
@@ -154,11 +210,19 @@ if __name__ == "__main__":
     since_date_str: str = since_date.strftime('%Y-%m-%d')
 
     dict_assigned_users: Dict = get_assigned_users(JIRA_PROJECT, since_date)
-    df = pd.DataFrame
-    df = add_dict_to_dataframe(dict_assigned_users, df)
-    print(f'Assigned users: {df}')
+    df = add_dict_to_dataframe(
+        dict_assigned_users, pd.DataFrame(), "name", "num_issues")
+
+    completed_issues_dict = get_completed_issues_by_user(
+        JIRA_PROJECT, since_date)
+    df_completed_issues = add_dict_to_dataframe(
+        completed_issues_dict, pd.DataFrame(), "name", "num_completed_issues")
+
+    df_final = integrate_data(df, df_completed_issues)
+    print(df_final)
+
     csv_file_path = f'{since_date_str}_{JIRA_PROJECT}_Jira_Stats.csv'
-    df.to_csv(csv_file_path, index=False)
+    df_final.to_csv(csv_file_path, index=False)
 
 
 # # Endpoint to get issues for a sprint
