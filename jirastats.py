@@ -1,16 +1,17 @@
 import os
 import time
 from typing import Dict
+from typing import Optional
 from requests.auth import HTTPBasicAuth
 import requests
 import json
 import base64
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import os
 from typing import List, Tuple
 import pandas as pd
 import numpy as np
-from numpy import busday_count
+from numpy import busday_count, mean
 
 import requests
 from dateutil.relativedelta import relativedelta
@@ -33,6 +34,29 @@ def get_business_days(start_date: datetime, end_date: datetime) -> int:
 
     # Count business days
     return busday_count(start_date, end_date)
+
+
+def get_days(start: datetime, end: datetime) -> float:
+    # Calculate the time difference
+    time_difference = end - start
+
+    # Convert the time difference to days (including fractional days)
+    days = time_difference / timedelta(days=1)
+
+    return round(days, 2)
+
+# def get_hours(start: datetime, end: datetime) -> Optional[float]:
+#     if start and end:
+#         # Calculate the time difference
+#         time_difference = end - start
+
+#         # Convert the time difference to hours
+#         hours = time_difference.total_seconds() / 3600
+
+#         # Round to two decimal places
+#         return round(hours, 2)
+
+#     return None  # In case start or end is None
 
 
 def get_date_months_ago(months_ago) -> datetime:
@@ -93,6 +117,32 @@ def add_dict_to_dataframe(data_dict: Dict[str, int], df: pd.DataFrame, col_name_
     return new_data
 
 
+def calculate_avg_days_open(issues_data: List[Dict], df: pd.DataFrame) -> pd.DataFrame:
+    user_open_days = {}
+
+    for issue in issues_data:
+        assignee = issue['fields']['assignee']['displayName']
+        assigned_date = datetime.strptime(
+            issue['fields']['created'], '%Y-%m-%dT%H:%M:%S.%f%z')
+        completed_date = datetime.strptime(
+            issue['fields']['resolutiondate'], '%Y-%m-%dT%H:%M:%S.%f%z')
+
+        # Calculate days between assigned_date and completed_date
+        open_days: int = get_days(assigned_date, completed_date)
+
+        if assignee in user_open_days:
+            user_open_days[assignee].append(open_days)
+        else:
+            user_open_days[assignee] = [open_days]
+
+    # Calculate average open days per user
+    for user, days in user_open_days.items():
+        avg_days = np.mean(days)
+        df.loc[df['name'] == user, 'avg_days_open'] = avg_days
+
+    return df
+
+
 def get_assigned_users(jira_project, time_since) -> Dict:
     jira_org_name = os.getenv("JIRA_ORG_NAME")
     jira_user = os.getenv("JIRA_USER")
@@ -107,7 +157,7 @@ def get_assigned_users(jira_project, time_since) -> Dict:
     time_since_str = time_since.strftime("%Y-%m-%d %H:%M")
 
     # JQL (Jira Query Language) for searching issues
-    jql = f"project = {jira_project} AND assignee is not EMPTY AND updated >= '{time_since_str}'"
+    jql = f"project = {jira_project} AND assignee is not EMPTY AND updated >= '{time_since_str}' AND resolutiondate >= '{time_since.strftime('%Y-%m-%d %H:%M')}'"
 
     # Prepare the request headers
     headers = {
@@ -118,14 +168,13 @@ def get_assigned_users(jira_project, time_since) -> Dict:
     # API endpoint for searching issues
     search_url = f"{jira_base_url}/search"
     issue_counter: int = 0
+    fields = "assignee,resolutiondate,created"
+
     while total_issues is None or start_at < total_issues:
         # Make the GET request with pagination
         params: Dict = {'jql': jql, 'startAt': start_at,
-                        'maxResults': max_results}
+                        'maxResults': max_results, 'fields': fields}
         response = request_exponential_backoff(search_url, params)
-        # Make the GET request with pagination
-        # response = requests.get(search_url, auth=HTTPBasicAuth(jira_user, jira_api_token), headers=headers,
-        #                         params={'jql': jql, 'startAt': start_at, 'maxResults': max_results})
 
         # Check if the request was successful
         if response.status_code == 200:
@@ -162,7 +211,8 @@ def get_completed_issues_by_user(jira_project, time_since) -> Dict[str, int]:
     start_at: int = 0
     max_results: int = JIRA_MAX_PAGE_SIZE
     total_issues: int = None
-    user_completed_issue_count: Dict[str, int] = {}
+    # user_completed_issue_count: Dict[str, int] = {}
+    user_issue_duration: Dict[str, list] = {}
 
     # Format the time_since to the appropriate format for JIRA API
     time_since_str = time_since.strftime("%Y-%m-%d %H:%M")
@@ -172,10 +222,12 @@ def get_completed_issues_by_user(jira_project, time_since) -> Dict[str, int]:
 
     # API endpoint for searching issues
     search_url = f"{JIRA_BASE_URL}/search"
+    # Specify fields to fetch: assignee, resolutiondate, and created
+    fields = "assignee,resolutiondate,created"
 
     while total_issues is None or start_at < total_issues:
         params: Dict = {'jql': jql, 'startAt': start_at,
-                        'maxResults': max_results}
+                        'maxResults': max_results, 'fields': fields}
         response = request_exponential_backoff(search_url, params)
 
         if response and response.status_code == 200:
@@ -186,8 +238,22 @@ def get_completed_issues_by_user(jira_project, time_since) -> Dict[str, int]:
                 assignee = issue['fields']['assignee']
                 if assignee:
                     assignee_username: str = assignee['displayName']
-                    user_completed_issue_count[assignee_username] = user_completed_issue_count.get(
-                        assignee_username, 0) + 1
+
+                    created_date = datetime.strptime(
+                        issue['fields']['created'], '%Y-%m-%dT%H:%M:%S.%f%z')
+                    resolution_date = datetime.strptime(
+                        issue['fields']['resolutiondate'], '%Y-%m-%dT%H:%M:%S.%f%z')
+                    open_days = get_days(
+                        created_date, resolution_date)
+
+                    if assignee_username in user_issue_duration:
+                        user_issue_duration[assignee_username].append(
+                            open_days)
+                    else:
+                        user_issue_duration[assignee_username] = [open_days]
+
+                    # user_completed_issue_count[assignee_username] = user_completed_issue_count.get(
+                    #     assignee_username, 0) + 1
 
             total_issues = data.get('total', 0)
             start_at += len(issues)
@@ -196,7 +262,11 @@ def get_completed_issues_by_user(jira_project, time_since) -> Dict[str, int]:
                 f'Failed to fetch data: {response.status_code} - {response.text}')
             break
 
-    return user_completed_issue_count
+    # Calculate average open days per user
+    user_avg_open_days: Dict[str, float] = {user: mean(
+        durations) for user, durations in user_issue_duration.items()}
+
+    return user_avg_open_days
 
 
 def integrate_data(df1, df2):
@@ -206,7 +276,6 @@ def integrate_data(df1, df2):
 
     # Replace NaN values with 0 (in case there are users with assigned issues but no completed issues, and vice versa)
     merged_df.fillna(0, inplace=True)
-    merged_df['completed_issues'] = merged_df['completed_issues'].astype(int)
 
     return merged_df
 
@@ -231,13 +300,17 @@ if __name__ == "__main__":
         completed_issues_dict, pd.DataFrame(), "name", "num_completed_issues")
 
     df_final = integrate_data(df, df_completed_issues)
+    df_final['num_completed_issues'] = df_final['num_completed_issues'].astype(
+        int)
 
     # Calculate business days since since_date
     business_days = get_business_days(since_date, datetime.now())
 
     # Calculate issues closed per day
-    df_final['issues_assigned_per_day'] = df_final['assigned_issues'] / business_days
-    df_final['issues_closed_per_day'] = df_final['completed_issues'] / business_days
+    df_final['issues_assigned_per_day'] = (
+        df_final['assigned_issues'] / business_days).round(2)
+    df_final['issues_closed_per_day'] = (
+        df_final['num_completed_issues'] / business_days).round(2)
     print(df_final)
 
     csv_file_path = f'{since_date_str}_{JIRA_PROJECT}_Jira_Stats.csv'
