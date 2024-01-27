@@ -12,4 +12,6 @@ pip3 install -r requirements.txt
 
 .env file should have
 JIRA_API_TOKEN=
-JIRA_USER=
+JIRA_USER=you@you.com
+JIRA_CO_URL=your_org_name
+JIRA_PROJECT=APP

@@ -10,6 +10,7 @@ import os
 from typing import List, Tuple
 import pandas as pd
 import numpy as np
+from numpy import busday_count
 
 import requests
 from dateutil.relativedelta import relativedelta
@@ -22,6 +23,16 @@ JIRA_MAX_PAGE_SIZE = 100
 
 # Base URL for your Jira instance
 JIRA_BASE_URL = f"https://{JIRA_CO_URL}.atlassian.net/rest/api/3"
+
+
+def get_business_days(start_date: datetime, end_date: datetime) -> int:
+    # Convert datetime to date if they are in datetime format
+    start_date = start_date.date() if isinstance(
+        start_date, datetime) else start_date
+    end_date = end_date.date() if isinstance(end_date, datetime) else end_date
+
+    # Count business days
+    return busday_count(start_date, end_date)
 
 
 def get_date_months_ago(months_ago) -> datetime:
@@ -195,6 +206,7 @@ def integrate_data(df1, df2):
 
     # Replace NaN values with 0 (in case there are users with assigned issues but no completed issues, and vice versa)
     merged_df.fillna(0, inplace=True)
+    merged_df['completed_issues'] = merged_df['completed_issues'].astype(int)
 
     return merged_df
 
@@ -211,7 +223,7 @@ if __name__ == "__main__":
 
     dict_assigned_users: Dict = get_assigned_users(JIRA_PROJECT, since_date)
     df = add_dict_to_dataframe(
-        dict_assigned_users, pd.DataFrame(), "name", "num_issues")
+        dict_assigned_users, pd.DataFrame(), "name", "assigned_issues")
 
     completed_issues_dict = get_completed_issues_by_user(
         JIRA_PROJECT, since_date)
@@ -219,6 +231,13 @@ if __name__ == "__main__":
         completed_issues_dict, pd.DataFrame(), "name", "num_completed_issues")
 
     df_final = integrate_data(df, df_completed_issues)
+
+    # Calculate business days since since_date
+    business_days = get_business_days(since_date, datetime.now())
+
+    # Calculate issues closed per day
+    df_final['issues_assigned_per_day'] = df_final['assigned_issues'] / business_days
+    df_final['issues_closed_per_day'] = df_final['completed_issues'] / business_days
     print(df_final)
 
     csv_file_path = f'{since_date_str}_{JIRA_PROJECT}_Jira_Stats.csv'
