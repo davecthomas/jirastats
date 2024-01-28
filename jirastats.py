@@ -1,6 +1,6 @@
 import os
 import time
-from typing import Dict
+from typing import Dict, Union
 from typing import Optional
 from requests.auth import HTTPBasicAuth
 import requests
@@ -32,10 +32,11 @@ def get_business_days(start_date: datetime, end_date: datetime) -> int:
         start_date, datetime) else start_date
     end_date = end_date.date() if isinstance(end_date, datetime) else end_date
 
-    # Count business days
+    # Count business days. Returns an int
     return busday_count(start_date, end_date)
 
 
+# Returns a float, since often issues are resolved in < 1 day
 def get_days(start: datetime, end: datetime) -> float:
     # Calculate the time difference
     time_difference = end - start
@@ -44,19 +45,6 @@ def get_days(start: datetime, end: datetime) -> float:
     days = time_difference / timedelta(days=1)
 
     return round(days, 2)
-
-# def get_hours(start: datetime, end: datetime) -> Optional[float]:
-#     if start and end:
-#         # Calculate the time difference
-#         time_difference = end - start
-
-#         # Convert the time difference to hours
-#         hours = time_difference.total_seconds() / 3600
-
-#         # Round to two decimal places
-#         return round(hours, 2)
-
-#     return None  # In case start or end is None
 
 
 def get_date_months_ago(months_ago) -> datetime:
@@ -143,87 +131,87 @@ def calculate_avg_days_open(issues_data: List[Dict], df: pd.DataFrame) -> pd.Dat
     return df
 
 
-def get_assigned_users(jira_project, time_since) -> Dict:
-    jira_org_name = os.getenv("JIRA_ORG_NAME")
-    jira_user = os.getenv("JIRA_USER")
-    jira_api_token = os.getenv("JIRA_API_TOKEN")
-    jira_base_url = JIRA_BASE_URL
+# def get_assigned_users(jira_project, time_since) -> Dict:
+#     jira_org_name = os.getenv("JIRA_ORG_NAME")
+#     jira_user = os.getenv("JIRA_USER")
+#     jira_api_token = os.getenv("JIRA_API_TOKEN")
+#     jira_base_url = JIRA_BASE_URL
+#     start_at: int = 0
+#     max_results: int = JIRA_MAX_PAGE_SIZE
+#     total_issues: int = None
+#     user_issue_count: Dict[str, int, int] = {}
+
+#     # Format the time_since to the appropriate format for JIRA API
+#     time_since_str = time_since.strftime("%Y-%m-%d %H:%M")
+
+#     # JQL (Jira Query Language) for searching issues
+#     jql = f"project = {jira_project} AND assignee is not EMPTY AND updated >= '{time_since_str}' AND resolutiondate >= '{time_since.strftime('%Y-%m-%d %H:%M')}'"
+
+#     # Prepare the request headers
+#     headers = {
+#         "Authorization": f"Basic {jira_api_token}",
+#         "Content-Type": "application/json"
+#     }
+
+#     # API endpoint for searching issues
+#     search_url = f"{jira_base_url}/search"
+#     issue_counter: int = 0
+#     fields = "assignee,resolutiondate,created"
+
+#     while total_issues is None or start_at < total_issues:
+#         # Make the GET request with pagination
+#         params: Dict = {'jql': jql, 'startAt': start_at,
+#                         'maxResults': max_results, 'fields': fields}
+#         response = request_exponential_backoff(search_url, params)
+
+#         # Check if the request was successful
+#         if response.status_code == 200:
+#             data = response.json()
+#             issues = data.get('issues', [])
+
+#             # Update user-issue counts
+#             for issue in issues:
+#                 issue_counter += 1
+#                 print(f"{issue_counter} of {total_issues}",
+#                       end='\r', flush=True)
+#                 # Get assignee and increment their count of assigned issues
+#                 assignee = issue['fields']['assignee']
+#                 if assignee:
+#                     # Increment issue count and store
+#                     assignee_username: str = assignee['displayName']
+#                     user_issue_count[assignee_username] = user_issue_count.get(
+#                         assignee_username, 0) + 1
+
+#             # Update the total number of issues and increment start_at
+#             total_issues = data.get('total', 0)
+#             start_at += len(issues)
+#         else:
+#             print(
+#                 f'Failed to fetch data: {response.status_code} - {response.text}')
+#             break
+
+#     print(
+#         f'Scanned through {issue_counter} of {total_issues} issues since {since_date_str}')
+
+#     return user_issue_count
+
+
+def get_completed_issues_by_user(jira_project, time_since) -> List[Dict[str, float]]:
     start_at: int = 0
     max_results: int = JIRA_MAX_PAGE_SIZE
     total_issues: int = None
-    user_issue_count: Dict[str, int] = {}
-
-    # Format the time_since to the appropriate format for JIRA API
-    time_since_str = time_since.strftime("%Y-%m-%d %H:%M")
-
-    # JQL (Jira Query Language) for searching issues
-    jql = f"project = {jira_project} AND assignee is not EMPTY AND updated >= '{time_since_str}' AND resolutiondate >= '{time_since.strftime('%Y-%m-%d %H:%M')}'"
-
-    # Prepare the request headers
-    headers = {
-        "Authorization": f"Basic {jira_api_token}",
-        "Content-Type": "application/json"
-    }
-
-    # API endpoint for searching issues
-    search_url = f"{jira_base_url}/search"
     issue_counter: int = 0
-    fields = "assignee,resolutiondate,created"
-
-    while total_issues is None or start_at < total_issues:
-        # Make the GET request with pagination
-        params: Dict = {'jql': jql, 'startAt': start_at,
-                        'maxResults': max_results, 'fields': fields}
-        response = request_exponential_backoff(search_url, params)
-
-        # Check if the request was successful
-        if response.status_code == 200:
-            data = response.json()
-            issues = data.get('issues', [])
-
-            # Update user-issue counts
-            for issue in issues:
-                issue_counter += 1
-                print(f"{issue_counter} of {total_issues}",
-                      end='\r', flush=True)
-                assignee = issue['fields']['assignee']
-                if assignee:
-                    # or 'emailAddress' depending on your JIRA setup
-                    assignee_username: str = assignee['displayName']
-                    user_issue_count[assignee_username] = user_issue_count.get(
-                        assignee_username, 0) + 1
-
-            # Update the total number of issues and increment start_at
-            total_issues = data.get('total', 0)
-            start_at += len(issues)
-        else:
-            print(
-                f'Failed to fetch data: {response.status_code} - {response.text}')
-            break
-
-    print(
-        f'Scanned through {issue_counter} of {total_issues} issues since {since_date_str}')
-
-    return user_issue_count
-
-
-def get_completed_issues_by_user(jira_project, time_since) -> Dict[str, int]:
-    start_at: int = 0
-    max_results: int = JIRA_MAX_PAGE_SIZE
-    total_issues: int = None
-    # user_completed_issue_count: Dict[str, int] = {}
-    user_issue_duration: Dict[str, list] = {}
-
-    # Format the time_since to the appropriate format for JIRA API
-    time_since_str = time_since.strftime("%Y-%m-%d %H:%M")
+    user_issue_data: Dict[str, Dict[str, Union[int, float]]] = {}
+    dict_user_issue_data_init: Dict[str, int] = {
+        'created_issues': 0, 'completed_issues': 0, 'comments': 0, 'total_days': 0}
 
     # JQL (Jira Query Language) for searching issues
-    jql = f"project = {jira_project} AND status = 'Completed' AND updated >= '{time_since_str}'"
+    # Get all issues either completed or in progress that were updated or resolved in the lookback period
+    jql = f"project = {jira_project} AND (status = 'Completed' OR status = 'In Progress') AND (updated >= '{time_since.strftime('%Y-%m-%d %H:%M')}' OR resolutiondate >= '{time_since.strftime('%Y-%m-%d %H:%M')}')"
+    fields = "creator,assignee,resolutiondate,created,comment,status"
 
     # API endpoint for searching issues
     search_url = f"{JIRA_BASE_URL}/search"
-    # Specify fields to fetch: assignee, resolutiondate, and created
-    fields = "assignee,resolutiondate,created"
 
     while total_issues is None or start_at < total_issues:
         params: Dict = {'jql': jql, 'startAt': start_at,
@@ -235,25 +223,46 @@ def get_completed_issues_by_user(jira_project, time_since) -> Dict[str, int]:
             issues = data.get('issues', [])
 
             for issue in issues:
-                assignee = issue['fields']['assignee']
-                if assignee:
-                    assignee_username: str = assignee['displayName']
+                issue_counter += 1
+                print(f"{issue_counter} of {total_issues}",
+                      end='\r', flush=True)
+                creator = issue['fields'].get('creator')
+                if creator:
+                    creator_username: str = creator['displayName']
+                    # Initialize a new dict entry if this is the first we've seen of the assignee
+                    if creator_username not in user_issue_data:
+                        user_issue_data[creator_username] = dict_user_issue_data_init
+                    user_issue_data[creator_username]['created_issues'] += 1
 
+                # The assignee only gets credit for the issue if it's completed
+                assignee = issue['fields'].get('assignee')
+                status = issue['fields'].get('status')
+                if assignee and status and status["name"] == "Completed":
+                    assignee_username: str = assignee['displayName']
                     created_date = datetime.strptime(
                         issue['fields']['created'], '%Y-%m-%dT%H:%M:%S.%f%z')
                     resolution_date = datetime.strptime(
                         issue['fields']['resolutiondate'], '%Y-%m-%dT%H:%M:%S.%f%z')
-                    open_days = get_days(
-                        created_date, resolution_date)
+                    days_open = (resolution_date - created_date).days
+                    # Initialize a new dict entry if this is the first we've seen of the assignee
+                    if assignee_username not in user_issue_data:
+                        user_issue_data[assignee_username] = dict_user_issue_data_init
 
-                    if assignee_username in user_issue_duration:
-                        user_issue_duration[assignee_username].append(
-                            open_days)
-                    else:
-                        user_issue_duration[assignee_username] = [open_days]
+                    user_issue_data[assignee_username]['total_days'] += days_open
+                    user_issue_data[assignee_username]['completed_issues'] += 1
 
-                    # user_completed_issue_count[assignee_username] = user_completed_issue_count.get(
-                    #     assignee_username, 0) + 1
+                # Get comments and add to dictionary
+                comments = issue['fields'].get(
+                    'comment', {}).get('comments', [])
+                for comment in comments:
+                    created = datetime.strptime(
+                        comment['created'], '%Y-%m-%dT%H:%M:%S.%f%z').replace(tzinfo=None)
+                    if created >= since_date:
+                        comment_author: str = comment['author']['displayName']
+                        # Initialize a new dict entry if this is the first we've seen of the commenter
+                        if comment_author not in user_issue_data:
+                            user_issue_data[comment_author] = dict_user_issue_data_init
+                        user_issue_data[comment_author]['comments'] += 1
 
             total_issues = data.get('total', 0)
             start_at += len(issues)
@@ -262,22 +271,20 @@ def get_completed_issues_by_user(jira_project, time_since) -> Dict[str, int]:
                 f'Failed to fetch data: {response.status_code} - {response.text}')
             break
 
-    # Calculate average open days per user
-    user_avg_open_days: Dict[str, float] = {user: mean(
-        durations) for user, durations in user_issue_duration.items()}
+    # Calculate average open days and prepare the result
+    result = []
+    for user, data in user_issue_data.items():
+        avg_days = data['total_days'] / \
+            data['completed_issues'] if data['completed_issues'] > 0 else 0
+        result.append({
+            'display_name': user,
+            'avg_days': round(avg_days, 2),
+            'created_issues': data['created_issues'],
+            'completed_issues': data['completed_issues'],
+            'comments': data['comments']
+        })
 
-    return user_avg_open_days
-
-
-def integrate_data(df1, df2):
-
-    # Merge the two DataFrames on the 'name' column
-    merged_df = pd.merge(df1, df2, on='name', how='outer')
-
-    # Replace NaN values with 0 (in case there are users with assigned issues but no completed issues, and vice versa)
-    merged_df.fillna(0, inplace=True)
-
-    return merged_df
+    return result
 
 
 if __name__ == "__main__":
@@ -290,31 +297,46 @@ if __name__ == "__main__":
     since_date: datetime = get_date_months_ago(default_lookback)
     since_date_str: str = since_date.strftime('%Y-%m-%d')
 
-    dict_assigned_users: Dict = get_assigned_users(JIRA_PROJECT, since_date)
-    df = add_dict_to_dataframe(
-        dict_assigned_users, pd.DataFrame(), "name", "assigned_issues")
+    # dict_assigned_users: Dict = get_assigned_users(JIRA_PROJECT, since_date)
+    # df_assigned_users = add_dict_to_dataframe(
+    #     dict_assigned_users, pd.DataFrame(), "name", "assigned_issues")
 
     completed_issues_dict = get_completed_issues_by_user(
         JIRA_PROJECT, since_date)
-    df_completed_issues = add_dict_to_dataframe(
-        completed_issues_dict, pd.DataFrame(), "name", "num_completed_issues")
+    df_completed_issues = pd.DataFrame(completed_issues_dict)
+    # Rename 'display_name' to 'name' to match the existing DataFrame
+    df_completed_issues.rename(columns={'display_name': 'name'}, inplace=True)
 
-    df_final = integrate_data(df, df_completed_issues)
-    df_final['num_completed_issues'] = df_final['num_completed_issues'].astype(
+    # # Merge the two DataFrames on the 'name' column
+    # merged_df = pd.merge(
+    #     df_assigned_users, df_completed_issues, on='name', how='outer')
+
+    # Replace NaN values with 0 (in case there are users with assigned issues but no completed issues, and vice versa)
+    df_completed_issues.fillna({'assigned_issues': 0, 'avg_days': 0, 'completed_issues': 0,
+                                'comments': 0}, inplace=True)
+
+    # I think this forces these columns to int from float
+    df_completed_issues['created_issues'] = df_completed_issues['created_issues'].astype(
+        int)
+    df_completed_issues['completed_issues'] = df_completed_issues['completed_issues'].astype(
         int)
 
     # Calculate business days since since_date
     business_days = get_business_days(since_date, datetime.now())
 
     # Calculate issues closed per day
-    df_final['issues_assigned_per_day'] = (
-        df_final['assigned_issues'] / business_days).round(2)
-    df_final['issues_closed_per_day'] = (
-        df_final['num_completed_issues'] / business_days).round(2)
-    print(df_final)
+    df_completed_issues['created_issues_per_day'] = (
+        df_completed_issues['created_issues'] / business_days).round(2)
+    df_completed_issues['completed_issues_per_day'] = (
+        df_completed_issues['completed_issues'] / business_days).round(2)
+    df_completed_issues['comments_per_day'] = (
+        df_completed_issues['comments'] / business_days).round(2)
+    # print(df_completed_issues)
 
-    csv_file_path = f'{since_date_str}_{JIRA_PROJECT}_Jira_Stats.csv'
-    df_final.to_csv(csv_file_path, index=False)
+    # Format datetime as a string without seconds or timezone
+    formatted_datetime = datetime.now().strftime('%Y-%m-%d_%H-%M')
+    csv_file_path = f'{formatted_datetime}_{JIRA_PROJECT}_Since_{since_date_str}_Stats.csv'
+    df_completed_issues.to_csv(csv_file_path, index=False)
 
 
 # # Endpoint to get issues for a sprint
