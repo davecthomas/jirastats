@@ -12,9 +12,9 @@ from typing import List, Tuple
 import pandas as pd
 import numpy as np
 from numpy import busday_count, mean
-
 import requests
 from dateutil.relativedelta import relativedelta
+from scipy.stats import norm
 
 JIRA_API_TOKEN = os.getenv("JIRA_API_TOKEN")
 JIRA_CO_URL = os.getenv("JIRA_CO_URL")
@@ -231,7 +231,8 @@ def get_completed_issues_by_user(jira_project, time_since) -> List[Dict[str, flo
                     creator_username: str = creator['displayName']
                     # Initialize a new dict entry if this is the first we've seen of the assignee
                     if creator_username not in user_issue_data:
-                        user_issue_data[creator_username] = dict_user_issue_data_init
+                        user_issue_data[creator_username] = dict_user_issue_data_init.copy(
+                        )
                     user_issue_data[creator_username]['created_issues'] += 1
 
                 # The assignee only gets credit for the issue if it's completed
@@ -246,7 +247,8 @@ def get_completed_issues_by_user(jira_project, time_since) -> List[Dict[str, flo
                     days_open = (resolution_date - created_date).days
                     # Initialize a new dict entry if this is the first we've seen of the assignee
                     if assignee_username not in user_issue_data:
-                        user_issue_data[assignee_username] = dict_user_issue_data_init
+                        user_issue_data[assignee_username] = dict_user_issue_data_init.copy(
+                        )
 
                     user_issue_data[assignee_username]['total_days'] += days_open
                     user_issue_data[assignee_username]['completed_issues'] += 1
@@ -261,7 +263,8 @@ def get_completed_issues_by_user(jira_project, time_since) -> List[Dict[str, flo
                         comment_author: str = comment['author']['displayName']
                         # Initialize a new dict entry if this is the first we've seen of the commenter
                         if comment_author not in user_issue_data:
-                            user_issue_data[comment_author] = dict_user_issue_data_init
+                            user_issue_data[comment_author] = dict_user_issue_data_init.copy(
+                            )
                         user_issue_data[comment_author]['comments'] += 1
 
             total_issues = data.get('total', 0)
@@ -285,6 +288,48 @@ def get_completed_issues_by_user(jira_project, time_since) -> List[Dict[str, flo
         })
 
     return result
+
+
+def add_ntile_stats(df):
+    ntile = 10  # Decile
+    # df is the dataframe of contributor stats. Calc ntiles, add columns, return new df
+    df['days_ntile'] = pd.qcut(
+        df['avg_days'], ntile, labels=False, duplicates='drop')
+    df['created_ntile'] = pd.qcut(
+        df['created_issues_per_day'], ntile, labels=False, duplicates='drop')
+    df['completed_ntile'] = pd.qcut(
+        df['completed_issues_per_day'], ntile, labels=False, duplicates='drop',)
+    df['comments_ntile'] = pd.qcut(
+        df['comments_per_day'], ntile, labels=False, duplicates='drop',)
+    # Not including days, for now
+    cols_to_average = ['comments_ntile', 'created_ntile',
+                       'completed_ntile']
+    df['avg_ntile'] = df[cols_to_average].mean(axis=1)
+    # df['grade'] = df['avg_ntile'].apply(convert_to_letter_grade)
+    return df
+
+
+def curve_scores(df, scores_column_name, curved_score_column_name):
+    # Calculate the mean and standard deviation of the scores
+    mean = df[scores_column_name].mean()
+    std_dev = df[scores_column_name].std()
+
+    # Calculate the Z-scores for each score
+    z_scores = (df[scores_column_name] - mean) / std_dev
+
+    # Create a normal distribution with mean 0 and standard deviation 1
+    norm_dist = norm(0, 1)
+
+    # Calculate the cumulative distribution function (CDF) for each Z-score
+    cdf = norm_dist.cdf(z_scores)
+
+    # Map the CDF values to a 0-100 range
+    curved_scores = (cdf * 100).round().astype(int)
+
+    # Update the DataFrame with the curved scores, near left side since this is important data
+    df.insert(1, curved_score_column_name, curved_scores)
+
+    return df
 
 
 if __name__ == "__main__":
@@ -331,6 +376,15 @@ if __name__ == "__main__":
         df_completed_issues['completed_issues'] / business_days).round(2)
     df_completed_issues['comments_per_day'] = (
         df_completed_issues['comments'] / business_days).round(2)
+
+    # Remove any rows where there are no completed issues, since that is the foundational statistic
+    # I'm seeing Github return PR comments from people who were not involved in the lookback
+    # period. I haven't diagnosed this. This is a hacky way to get rid of them.
+    # Obvy, if PRs and commits are zero, so are changed_lines.
+    df = df_completed_issues[~(df_completed_issues['completed_issues'] == 0)]
+    df = add_ntile_stats(df)
+    df = curve_scores(df, "avg_ntile", "curved_score")
+
     # print(df_completed_issues)
 
     # Format datetime as a string without seconds or timezone
