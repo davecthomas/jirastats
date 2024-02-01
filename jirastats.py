@@ -15,6 +15,7 @@ from numpy import busday_count, mean
 import requests
 from dateutil.relativedelta import relativedelta
 from scipy.stats import norm
+from requests.models import Response
 
 JIRA_API_TOKEN = os.getenv("JIRA_API_TOKEN")
 JIRA_CO_URL = os.getenv("JIRA_CO_URL")
@@ -59,36 +60,136 @@ def encode_key(user_email, api_key):
     encoded_string = str(encoded_bytes, "utf-8")
     return encoded_string
 
+# Sleep seconds from now to the future time passed in
 
-def request_exponential_backoff(url: str, params: Dict = None):
-    exponential_backoff_retry_delays_list: list[int] = [1, 2, 4, 8, 16]
+
+def sleep_until_ratelimit_reset_time(reset_epoch_time):
+    # Convert the reset time from Unix epoch time to a datetime object
+    reset_time = datetime.utcfromtimestamp(reset_epoch_time)
+
+    # Get the current time
+    now = datetime.utcnow()
+
+    # Calculate the time difference
+    time_diff = reset_time - now
+
+    # Check if the sleep time is negative, which can happen if the reset time has passed
+    if time_diff.total_seconds() < 0:
+        print("\tNo sleep required. The rate limit reset time has already passed.")
+    else:
+        time_diff = timedelta(seconds=int(time_diff.total_seconds()))
+        # Print the sleep time using timedelta's string representation
+        print(f"\tSleeping until rate limit reset: {time_diff}")
+        time.sleep(time_diff.total_seconds())
+    return
+
+# Check if we overran our rate limit. Take a short nap if so.
+# Return True if we overran
+
+
+def check_API_rate_limit(response: Response) -> bool:
+    if response.status_code == 403 and 'X-Ratelimit-Remaining' in response.headers:
+        if int(response.headers['X-Ratelimit-Remaining']) == 0:
+            print(
+                f"\t403 forbidden response header shows X-Ratelimit-Remaining at {response.headers['X-Ratelimit-Remaining']} requests.")
+            sleep_until_ratelimit_reset_time(
+                int(response.headers['X-RateLimit-Reset']))
+    return (response.status_code == 403 and 'X-Ratelimit-Remaining' in response.headers)
+
+
+# Retry backoff in 422, 202, or 403 (rate limit exceeded) responses
+def jira_request_exponential_backoff(url: str, params: Dict = None):
+    exponential_backoff_retry_delays_list: list[int] = [1, 2, 4, 8, 16, 32, 64]
     headers = {
         "Authorization": f"Basic {JIRA_API_TOKEN}",
         "Content-Type": "application/json"
     }
 
-    response = requests.get(url, auth=HTTPBasicAuth(
-        JIRA_USER, JIRA_API_TOKEN), headers=headers, params=params)
-    if response.status_code != 200:
-        if response.status_code == 429 or response.status_code == 202:  # Try again
+    retry: bool = False
+    response: Response = Response()
+    retry_url: str = None
+
+    try:
+        response = requests.get(url, auth=HTTPBasicAuth(
+            JIRA_USER, JIRA_API_TOKEN), headers=headers, params=params)
+    except requests.exceptions.Timeout:
+        print("Initial request timed out.")
+        retry = True
+
+    if retry or (response is not None and response.status_code != 200):
+        if response.status_code == 422 and response.reason == "Unprocessable Entity":
+            dict_error: Dict[str, any] = json.loads(response.text)
+            print(
+                f"Skipping: {response.status_code} {response.reason} for url {url}\n\t{dict_error['message']}\n\t{dict_error['errors'][0]['message']}")
+
+        elif retry or response.status_code == 202 or response.status_code == 403:  # Try again
             for retry_attempt_delay in exponential_backoff_retry_delays_list:
-                retry_url = response.headers.get('Location')
+                if 'Location' in response.headers:
+                    retry_url = response.headers.get('Location')
+                # The only time we override the exponential backoff if we are asked by Github to wait
+                if 'Retry-After' in response.headers:
+                    retry_attempt_delay = response.headers.get('Retry-After')
                 # Wait for n seconds before checking the status
                 time.sleep(retry_attempt_delay)
                 retry_response_url: str = retry_url if retry_url else url
                 print(
                     f"Retrying request for {retry_response_url} after {retry_attempt_delay} sec due to {response.status_code} response")
-                response = requests.get(
-                    retry_response_url, headers=headers)
+                # A 403 may require us to take a nap
+                check_API_rate_limit(response)
 
+                try:
+                    response = requests.get(
+                        retry_response_url, headers=headers)
+                except requests.exceptions.Timeout:
+                    print(
+                        f"Retry request timed out. retrying in {retry_attempt_delay} seconds.")
+                    continue
                 # Check if the retry response is 200
                 if response.status_code == 200:
                     break  # Exit the loop on successful response
+                else:
+                    print(
+                        f"\tRetried request and still got bad response status code: {response.status_code}")
 
     if response.status_code == 200:
-        return response
+        # print(f"Retry successful. Status code: {response.status_code}")
+        return response.json()
     else:
+        check_API_rate_limit(response)
+        print(
+            f"Retries exhausted. Giving up. Status code: {response.status_code}")
         return None
+
+
+# def request_exponential_backoff(url: str, params: Dict = None):
+#     exponential_backoff_retry_delays_list: list[int] = [1, 2, 4, 8, 16]
+#     headers = {
+#         "Authorization": f"Basic {JIRA_API_TOKEN}",
+#         "Content-Type": "application/json"
+#     }
+
+#     response = requests.get(url, auth=HTTPBasicAuth(
+#         JIRA_USER, JIRA_API_TOKEN), headers=headers, params=params)
+#     if response.status_code != 200:
+#         if response.status_code == 429 or response.status_code == 202:  # Try again
+#             for retry_attempt_delay in exponential_backoff_retry_delays_list:
+#                 retry_url = response.headers.get('Location')
+#                 # Wait for n seconds before checking the status
+#                 time.sleep(retry_attempt_delay)
+#                 retry_response_url: str = retry_url if retry_url else url
+#                 print(
+#                     f"Retrying request for {retry_response_url} after {retry_attempt_delay} sec due to {response.status_code} response")
+#                 response = requests.get(
+#                     retry_response_url, headers=headers)
+
+#                 # Check if the retry response is 200
+#                 if response.status_code == 200:
+#                     break  # Exit the loop on successful response
+
+#     if response.status_code == 200:
+#         return response
+#     else:
+#         return None
 
 
 def add_dict_to_dataframe(data_dict: Dict[str, int], df: pd.DataFrame, col_name_key: str, col_name_value: str) -> pd.DataFrame:
@@ -131,71 +232,6 @@ def calculate_avg_days_open(issues_data: List[Dict], df: pd.DataFrame) -> pd.Dat
     return df
 
 
-# def get_assigned_users(jira_project, time_since) -> Dict:
-#     jira_org_name = os.getenv("JIRA_ORG_NAME")
-#     jira_user = os.getenv("JIRA_USER")
-#     jira_api_token = os.getenv("JIRA_API_TOKEN")
-#     jira_base_url = JIRA_BASE_URL
-#     start_at: int = 0
-#     max_results: int = JIRA_MAX_PAGE_SIZE
-#     total_issues: int = None
-#     user_issue_count: Dict[str, int, int] = {}
-
-#     # Format the time_since to the appropriate format for JIRA API
-#     time_since_str = time_since.strftime("%Y-%m-%d %H:%M")
-
-#     # JQL (Jira Query Language) for searching issues
-#     jql = f"project = {jira_project} AND assignee is not EMPTY AND updated >= '{time_since_str}' AND resolutiondate >= '{time_since.strftime('%Y-%m-%d %H:%M')}'"
-
-#     # Prepare the request headers
-#     headers = {
-#         "Authorization": f"Basic {jira_api_token}",
-#         "Content-Type": "application/json"
-#     }
-
-#     # API endpoint for searching issues
-#     search_url = f"{jira_base_url}/search"
-#     issue_counter: int = 0
-#     fields = "assignee,resolutiondate,created"
-
-#     while total_issues is None or start_at < total_issues:
-#         # Make the GET request with pagination
-#         params: Dict = {'jql': jql, 'startAt': start_at,
-#                         'maxResults': max_results, 'fields': fields}
-#         response = request_exponential_backoff(search_url, params)
-
-#         # Check if the request was successful
-#         if response.status_code == 200:
-#             data = response.json()
-#             issues = data.get('issues', [])
-
-#             # Update user-issue counts
-#             for issue in issues:
-#                 issue_counter += 1
-#                 print(f"{issue_counter} of {total_issues}",
-#                       end='\r', flush=True)
-#                 # Get assignee and increment their count of assigned issues
-#                 assignee = issue['fields']['assignee']
-#                 if assignee:
-#                     # Increment issue count and store
-#                     assignee_username: str = assignee['displayName']
-#                     user_issue_count[assignee_username] = user_issue_count.get(
-#                         assignee_username, 0) + 1
-
-#             # Update the total number of issues and increment start_at
-#             total_issues = data.get('total', 0)
-#             start_at += len(issues)
-#         else:
-#             print(
-#                 f'Failed to fetch data: {response.status_code} - {response.text}')
-#             break
-
-#     print(
-#         f'Scanned through {issue_counter} of {total_issues} issues since {since_date_str}')
-
-#     return user_issue_count
-
-
 def get_completed_issues_by_user(jira_project, time_since) -> List[Dict[str, float]]:
     start_at: int = 0
     max_results: int = JIRA_MAX_PAGE_SIZE
@@ -203,29 +239,32 @@ def get_completed_issues_by_user(jira_project, time_since) -> List[Dict[str, flo
     issue_counter: int = 0
     user_issue_data: Dict[str, Dict[str, Union[int, float]]] = {}
     dict_user_issue_data_init: Dict[str, int] = {
-        'created_issues': 0, 'completed_issues': 0, 'comments': 0, 'total_days': 0}
+        'created_issues': 0, 'completed_issues': 0, 'comments': 0, 'total_days': 0, 'first_seen': time_since}
 
     # JQL (Jira Query Language) for searching issues
     # Get all issues either completed or in progress that were updated or resolved in the lookback period
-    jql = f"project = {jira_project} AND (status = 'Completed' OR status = 'In Progress') AND (updated >= '{time_since.strftime('%Y-%m-%d %H:%M')}' OR resolutiondate >= '{time_since.strftime('%Y-%m-%d %H:%M')}')"
-    fields = "creator,assignee,resolutiondate,created,comment,status"
+    jql: str = f"project = {jira_project} AND (status = 'Completed' OR status = 'In Progress') AND (updated >= '{time_since.strftime('%Y-%m-%d %H:%M')}' OR resolutiondate >= '{time_since.strftime('%Y-%m-%d %H:%M')}')"
+    fields: str = "creator,assignee,resolutiondate,created,comment,status"
+    expand: str = "changelog"
 
     # API endpoint for searching issues
-    search_url = f"{JIRA_BASE_URL}/search"
+    search_url: str = f"{JIRA_BASE_URL}/search"
 
     while total_issues is None or start_at < total_issues:
         params: Dict = {'jql': jql, 'startAt': start_at,
-                        'maxResults': max_results, 'fields': fields}
-        response = request_exponential_backoff(search_url, params)
+                        'maxResults': max_results, 'fields': fields, 'expand': expand}
+        response = jira_request_exponential_backoff(search_url, params)
 
-        if response and response.status_code == 200:
-            data = response.json()
+        if response:
+            data = response
             issues = data.get('issues', [])
 
             for issue in issues:
                 issue_counter += 1
                 print(f"{issue_counter} of {total_issues}",
                       end='\r', flush=True)
+
+                # Grab creator stats
                 creator = issue['fields'].get('creator')
                 if creator:
                     creator_username: str = creator['displayName']
@@ -235,6 +274,7 @@ def get_completed_issues_by_user(jira_project, time_since) -> List[Dict[str, flo
                         )
                     user_issue_data[creator_username]['created_issues'] += 1
 
+                # Grab assignee stats
                 # The assignee only gets credit for the issue if it's completed
                 assignee = issue['fields'].get('assignee')
                 status = issue['fields'].get('status')
@@ -253,7 +293,7 @@ def get_completed_issues_by_user(jira_project, time_since) -> List[Dict[str, flo
                     user_issue_data[assignee_username]['total_days'] += days_open
                     user_issue_data[assignee_username]['completed_issues'] += 1
 
-                # Get comments and add to dictionary
+                # Get commenter stats
                 comments = issue['fields'].get(
                     'comment', {}).get('comments', [])
                 for comment in comments:
@@ -267,6 +307,22 @@ def get_completed_issues_by_user(jira_project, time_since) -> List[Dict[str, flo
                             )
                         user_issue_data[comment_author]['comments'] += 1
 
+                # Get history to track the earliest date we see a user, so we fairly credit
+                # them for time in the lookback period they are doing work in the Jira project
+                changelog = issue.get('changelog', {}).get('histories', [])
+                for history in changelog:
+                    for item in history.get('items', []):
+                        if item.get('field') == 'assignee':
+                            history_date = datetime.strptime(
+                                history['created'], '%Y-%m-%dT%H:%M:%S.%f%z').replace(tzinfo=None)
+                            assignee = item.get('toString', '')
+                            if assignee:
+                                if assignee not in user_issue_data:
+                                    user_issue_data[assignee] = dict_user_issue_data_init.copy(
+                                    )
+                                if (history_date < user_issue_data[assignee]['first_seen']):
+                                    user_issue_data[assignee]['first_seen'] = history_date
+
             total_issues = data.get('total', 0)
             start_at += len(issues)
         else:
@@ -274,17 +330,29 @@ def get_completed_issues_by_user(jira_project, time_since) -> List[Dict[str, flo
                 f'Failed to fetch data: {response.status_code} - {response.text}')
             break
 
+    # Get the earliest date we saw the user
+    # those users starting after since_date have their denominator changed for per_day stats
+    user_earliest_assignment_dates: Dict[str, datetime] = get_earliest_assignment_date(
+        JIRA_PROJECT, since_date)
+
     # Calculate average open days and prepare the result
     result = []
     for user, data in user_issue_data.items():
         avg_days = data['total_days'] / \
             data['completed_issues'] if data['completed_issues'] > 0 else 0
+
+        business_days_lookback: int = get_business_days(
+            since_date, datetime.now())
+        business_days_on_project: int = get_business_days(
+            user_earliest_assignment_dates[user], datetime.now())
         result.append({
             'display_name': user,
+            'first_seen': data['first_seen'],
             'avg_days': round(avg_days, 2),
             'created_issues': data['created_issues'],
             'completed_issues': data['completed_issues'],
-            'comments': data['comments']
+            'comments': data['comments'],
+            'days_on_team_in_lookback': business_days_lookback if business_days_lookback <= business_days_on_project else business_days_on_project
         })
 
     return result
@@ -331,6 +399,48 @@ def curve_scores(df, scores_column_name, curved_score_column_name):
 
     return df
 
+# get the date a user joined a project so we know what date to start evaluating their
+# productivity
+
+
+def get_earliest_assignment_date(jira_project, since_date) -> Dict[str, datetime]:
+    start_at = 0
+    max_results = 50  # Adjust as needed
+    user_earliest_assignment = {}
+
+    jql = f"project = {jira_project} AND updated >= '{since_date.strftime('%Y-%m-%d')}'"
+    fields = "assignee"
+    expand = "changelog"
+    search_url = f"{JIRA_BASE_URL}/search"
+
+    while True:
+        params = {'jql': jql, 'startAt': start_at,
+                  'maxResults': max_results, 'fields': fields, 'expand': expand}
+        response = jira_request_exponential_backoff(search_url, params)
+
+        if response is None:
+            break
+
+        data = response
+        issues = data.get('issues', [])
+
+        for issue in issues:
+            changelog = issue.get('changelog', {}).get('histories', [])
+            for history in changelog:
+                for item in history.get('items', []):
+                    if item.get('field') == 'assignee':
+                        date = datetime.strptime(
+                            history['created'], '%Y-%m-%dT%H:%M:%S.%f%z')
+                        assignee = item.get('toString', '')
+                        if assignee and (assignee not in user_earliest_assignment or date < user_earliest_assignment[assignee]):
+                            user_earliest_assignment[assignee] = date
+
+        start_at += max_results
+        if start_at >= data.get('total', 0):
+            break
+
+    return user_earliest_assignment
+
 
 if __name__ == "__main__":
     # Get the env settings
@@ -342,19 +452,12 @@ if __name__ == "__main__":
     since_date: datetime = get_date_months_ago(default_lookback)
     since_date_str: str = since_date.strftime('%Y-%m-%d')
 
-    # dict_assigned_users: Dict = get_assigned_users(JIRA_PROJECT, since_date)
-    # df_assigned_users = add_dict_to_dataframe(
-    #     dict_assigned_users, pd.DataFrame(), "name", "assigned_issues")
-
     completed_issues_dict = get_completed_issues_by_user(
         JIRA_PROJECT, since_date)
+
     df_completed_issues = pd.DataFrame(completed_issues_dict)
     # Rename 'display_name' to 'name' to match the existing DataFrame
     df_completed_issues.rename(columns={'display_name': 'name'}, inplace=True)
-
-    # # Merge the two DataFrames on the 'name' column
-    # merged_df = pd.merge(
-    #     df_assigned_users, df_completed_issues, on='name', how='outer')
 
     # Replace NaN values with 0 (in case there are users with assigned issues but no completed issues, and vice versa)
     df_completed_issues.fillna({'assigned_issues': 0, 'avg_days': 0, 'completed_issues': 0,
@@ -389,8 +492,8 @@ if __name__ == "__main__":
 
     # Format datetime as a string without seconds or timezone
     formatted_datetime = datetime.now().strftime('%Y-%m-%d_%H-%M')
-    csv_file_path = f'{formatted_datetime}_{JIRA_PROJECT}_Since_{since_date_str}_Stats.csv'
-    df_completed_issues.to_csv(csv_file_path, index=False)
+    csv_file_path = f'jirastats_{formatted_datetime}_{JIRA_PROJECT}_Since_{since_date_str}_Stats.csv'
+    df.to_csv(csv_file_path, index=False)
 
 
 # # Endpoint to get issues for a sprint
