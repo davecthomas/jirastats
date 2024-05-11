@@ -343,8 +343,11 @@ def get_completed_issues_by_user(jira_project, time_since) -> List[Dict[str, flo
 
         business_days_lookback: int = get_business_days(
             since_date, datetime.now())
-        business_days_on_project: int = get_business_days(
-            user_earliest_assignment_dates[user], datetime.now())
+        if user in user_earliest_assignment_dates:
+            business_days_on_project: int = get_business_days(
+                user_earliest_assignment_dates[user], datetime.now())
+        else:
+            business_days_on_project = business_days_lookback
         result.append({
             'display_name': user,
             'first_seen': data['first_seen'],
