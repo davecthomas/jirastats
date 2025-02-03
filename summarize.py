@@ -49,7 +49,14 @@ class Summarizer:
 
         # 3. Build the final prompt for OpenAI
         prompt_lines = [
-            "Please summarize the following Jira issues:\n",
+            """Please summarize the following Jira issues briefly. 
+            Categorizing major areas of work using a coherent priority scheme for ordering these categorized areas. 
+            For each category summary, conclude the summary with a list of JIRA issue keys that are exemplars of this category. 
+            Do not list more than 10 issues per category, for brevity. 
+            Output format: \n
+            [Category 1 Name]: [Summary of issues]. [Noteworthy activity on these issues]. [KEY-123, KEY-124, KEY-125]
+            [Categoryt 2 Name]: (etc)\n
+            :\n """,
             *readable_texts  # Insert each human-readable block
         ]
         prompt_text = "\n\n".join(prompt_lines)
@@ -70,12 +77,13 @@ def test_summarizer():
         return
 
     # Optional: specify the statuses you want to filter (or pass None for all)
-    statuses_to_include = ["In Progress", "Completed"]
+    statuses_to_include = ["In Progress", "Open"]
 
     summarizer = Summarizer()
     summary = summarizer.summarize_issues(
         project_key, allowed_statuses=statuses_to_include)
-    print("\n--- Summary of Jira Issues ---\n")
+    print(
+        f"\n--- Summary of {project_key} Issues in status {statuses_to_include}---\n")
     print(summary)
 
 
