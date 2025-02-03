@@ -14,4 +14,8 @@ pip3 install -r requirements.txt
 JIRA_API_TOKEN=
 JIRA_USER=you@you.com
 JIRA_CO_URL=your_org_name
-JIRA_PROJECT=APP
+JIRA_PROJECT=
+OPENAI_API_KEY=
+OPENAI_EMBEDDING_MODEL=text-embedding-3-small
+OPENAI_USER=
+OPENAI_COMPLETIONS_MODEL=o3-mini
