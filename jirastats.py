@@ -513,13 +513,16 @@ class MyJira:
 
         return result
 
-    def get_all_issues_for_project(self, project_key: str) -> List[Dict]:
+    def get_all_issues_for_project(self, project_key: str, allowed_statuses: Optional[List[str]] = None) -> List[Dict]:
         """
         Retrieves all Jira issues for the specified project within
         the DEFAULT_MONTHS_LOOKBACK window set in the environment variables.
+        Optionally, filter by one or more statuses.
 
         Args:
             project_key (str): The key (ID) of the Jira project, e.g., "TEST".
+            allowed_statuses (List[str], optional): A list of Jira status names to filter on.
+                If None, no status filter is applied (all issues returned).
 
         Returns:
             List[Dict]: A list of dictionaries representing Jira issues, each containing:
@@ -539,7 +542,17 @@ class MyJira:
         start_at = 0
         max_results = 50
         issues_list = []
+
+        # Base JQL to filter by project and updated date
         jql = f"project = {project_key} AND updated >= '{since_date_str}'"
+
+        # If we have a status filter, add it to the JQL clause
+        if allowed_statuses:
+            # Create a parenthesized OR condition for multiple statuses
+            status_conditions = " OR ".join(
+                [f"status = \"{status}\"" for status in allowed_statuses])
+            jql += f" AND ({status_conditions})"
+
         fields = "summary,status,description,assignee,creator"
         search_url = f"{self.CONFIG['JIRA_BASE_URL']}/search"
 

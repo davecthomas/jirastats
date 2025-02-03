@@ -1,59 +1,60 @@
 # summarize.py
 
 import os
-from .jirastats import get_all_issues_for_project
-from .openai import MyOpenAI
+from jirastats import MyJira
+from myopenai import MyOpenAI
 
 
 class Summarizer:
     """
     A class that uses Jira data to generate a high-level summary of all issues
-    within a specified Jira project. It fetches the issues via the `get_all_issues_for_project`
-    function, then sends the aggregated issue data to OpenAI for summarization.
+    within a specified Jira project. It fetches the issues via the MyJira class,
+    converts them to a human-readable format, and then sends the content
+    to OpenAI for summarization.
     """
 
     def __init__(self):
         """
         Initializes the Summarizer class by creating an instance of MyOpenAI
-        for handling chat completions.
+        for handling chat completions, and a MyJira instance for fetching & formatting Jira data.
         """
         self.openai_client = MyOpenAI()
+        self.jira_client = MyJira()
 
-    def summarize_issues(self, project_key: str) -> str:
+    def summarize_issues(self, project_key: str, allowed_statuses=None) -> str:
         """
-        Fetches all issues for a given Jira project using the existing Jira logic
-        (get_all_issues_for_project), compiles the issue list into a structured text prompt,
-        and then sends the prompt to OpenAI to get a summary.
+        Fetches all issues for a given Jira project using MyJira, converts each issue
+        to a more human-readable text, and then sends all that text to OpenAI to get a summary.
 
         Args:
             project_key (str): The Jira project key (e.g., "TEST").
+            allowed_statuses (List[str], optional): Filter issues by one or more statuses.
 
         Returns:
             str: A summary of the issues provided by the OpenAI model.
         """
-        # 1. Fetch all issues for the project
-        issues = get_all_issues_for_project(project_key)
-
+        # 1. Fetch issues from MyJira, optionally filtered by status.
+        issues = self.jira_client.get_all_issues_for_project(
+            project_key, allowed_statuses=allowed_statuses
+        )
         if not issues:
-            return "No issues found to summarize."
+            return f"No issues found to summarize for project: {project_key}"
 
-        # 2. Build a structured text prompt from the issues
-        #    You can customize how detailed you want to be here
-        prompt_lines = [
-            "Summarize the following list of Jira issues:\n",
-            "Format: KEY, SUMMARY, STATUS, ASSIGNEE\n\n",
-        ]
+        # 2. Convert each issue to a human-readable string using build_human_readable_issue_text.
+        readable_texts = []
         for issue in issues:
-            issue_key = issue.get("key", "NoKey")
-            summary = issue.get("summary", "NoSummary")
-            status = issue.get("status", "NoStatus")
-            assignee = issue.get("assignee", "Unassigned")
-            prompt_lines.append(
-                f"- {issue_key}: {summary} | Status: {status} | Assignee: {assignee}")
+            text_block = self.jira_client.build_human_readable_issue_text(
+                issue)
+            readable_texts.append(text_block)
 
-        prompt_text = "\n".join(prompt_lines)
+        # 3. Build the final prompt for OpenAI
+        prompt_lines = [
+            "Please summarize the following Jira issues:\n",
+            *readable_texts  # Insert each human-readable block
+        ]
+        prompt_text = "\n\n".join(prompt_lines)
 
-        # 3. Send the prompt to OpenAI for summarization
+        # 4. Send the prompt to OpenAI for summarization
         completion = self.openai_client.sendPrompt(prompt_text)
         return completion
 
@@ -68,9 +69,13 @@ def test_summarizer():
         print("No project key found in environment variable JIRA_PROJECT.")
         return
 
+    # Optional: specify the statuses you want to filter (or pass None for all)
+    statuses_to_include = ["In Progress", "Completed"]
+
     summarizer = Summarizer()
-    summary = summarizer.summarize_issues(project_key)
-    print("\n--- Summary of Jira Issues ---")
+    summary = summarizer.summarize_issues(
+        project_key, allowed_statuses=statuses_to_include)
+    print("\n--- Summary of Jira Issues ---\n")
     print(summary)
 
 
