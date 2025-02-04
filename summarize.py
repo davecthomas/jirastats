@@ -21,7 +21,7 @@ class Summarizer:
         self.openai_client = MyOpenAI()
         self.jira_client = MyJira()
 
-    def summarize_issues(self, project_key: str, allowed_statuses=None) -> str:
+    def summarize_issues(self, project_key: str, prompt="Please summarize these issues", allowed_statuses=None) -> str:
         """
         Fetches all issues for a given Jira project using MyJira, converts each issue
         to a more human-readable text, and then sends all that text to OpenAI to get a summary.
@@ -49,14 +49,7 @@ class Summarizer:
 
         # 3. Build the final prompt for OpenAI
         prompt_lines = [
-            """Please summarize the following Jira issues briefly. 
-            Categorizing major areas of work using a coherent priority scheme for ordering these categorized areas. 
-            For each category summary, conclude the summary with a list of JIRA issue keys that are exemplars of this category. 
-            Do not list more than 10 issues per category, for brevity. 
-            Output format: \n
-            [Category 1 Name]: [Summary of issues]. [Noteworthy activity on these issues]. [KEY-123, KEY-124, KEY-125]
-            [Categoryt 2 Name]: (etc)\n
-            :\n """,
+            prompt,
             *readable_texts  # Insert each human-readable block
         ]
         prompt_text = "\n\n".join(prompt_lines)
@@ -66,26 +59,47 @@ class Summarizer:
         return completion
 
 
-def test_summarizer():
+def test_summarizer(project_key: str = None, prompt: str = None):
     """
     Test function to verify the Summarizer class functionality.
     Attempts to summarize issues for the Jira project specified in .env.
     """
-    project_key = os.getenv("JIRA_PROJECT")
-    if not project_key:
-        print("No project key found in environment variable JIRA_PROJECT.")
-        return
 
     # Optional: specify the statuses you want to filter (or pass None for all)
     statuses_to_include = ["In Progress", "Open"]
 
     summarizer = Summarizer()
     summary = summarizer.summarize_issues(
-        project_key, allowed_statuses=statuses_to_include)
+        project_key, prompt, allowed_statuses=statuses_to_include)
     print(
         f"\n--- Summary of {project_key} Issues in status {statuses_to_include}---\n")
     print(summary)
 
 
+def is_hex_environment():
+    """
+    Checks if the current runtime is in a Hex environment.
+    """
+    return os.getenv('HEX_PROJECT_ID') is not None
+
+
 if __name__ == "__main__":
-    test_summarizer()
+    # If you want to move this to Hex, you can put this prompt and the project key in user input fields
+
+    if not is_hex_environment():
+        prompt: str = """Please summarize the following Jira issues. 
+            Categorize major areas of work using a coherent priority scheme for ordering these categorized areas. 
+            For each category summary, conclude the summary with a list of JIRA issue keys that are exemplars of this category. 
+            Do not list more than 10 issues per category, for brevity. 
+            Output format: \n
+            [Category 1 Name]: [Summary of issues]. [Noteworthy activity on these issues]. [KEY-123, KEY-124, KEY-125]
+            [Categoryt 2 Name]: (etc)\n
+            :\n """
+        project_key = os.getenv("JIRA_PROJECT", "FOO")
+    else:
+        # This should be the name of the Hex input field for the project key
+        project_key = user_input_project_key
+        # This should be the name of the Hex input field for the prompt
+        prompt = user_input_prompt
+
+    test_summarizer(project_key, prompt)
